@@ -11,8 +11,8 @@ import {
   add,
   getFaceCentroid,
   computeFaceNormals,
-  rayTriangleIntersect,
   buildBVH,
+  raycastBVH,
 } from './geometry';
 
 export function analyzeWallThickness(
@@ -38,28 +38,37 @@ export function analyzeWallThickness(
     if (faceIndex >= faceCount) break;
 
     const centroid = getFaceCentroid(vertices, indices, faceIndex);
-    const normal = {
-      x: faceNormals[faceIndex * 3],
-      y: faceNormals[faceIndex * 3 + 1],
-      z: faceNormals[faceIndex * 3 + 2],
+    const nx = faceNormals[faceIndex * 3];
+    const ny = faceNormals[faceIndex * 3 + 1];
+    const nz = faceNormals[faceIndex * 3 + 2];
+
+    const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (nLen === 0) continue;
+
+    const dirX = -nx / nLen;
+    const dirY = -ny / nLen;
+    const dirZ = -nz / nLen;
+
+    const rayOrigin = {
+      x: centroid.x - dirX * 0.01,
+      y: centroid.y - dirY * 0.01,
+      z: centroid.z - dirZ * 0.01,
     };
+    const rayDir = { x: dirX, y: dirY, z: dirZ };
 
-    const rayDir = scale(normalize(normal), -1);
-    const rayOrigin = add(centroid, scale(rayDir, -0.01));
+    const result = raycastBVH(rayOrigin, rayDir, bvh, 100);
 
-    const thickness = raycastThickness(rayOrigin, rayDir, bvh.triangles);
-
-    if (thickness > 0 && thickness < 100) {
+    if (result.hit && result.t > 0.001 && result.t < 100) {
       samples.push({
         x: centroid.x,
         y: centroid.y,
         z: centroid.z,
-        thickness,
+        thickness: result.t,
       });
 
-      if (thickness < minThickness) minThickness = thickness;
-      if (thickness > maxThickness) maxThickness = thickness;
-      totalThickness += thickness;
+      if (result.t < minThickness) minThickness = result.t;
+      if (result.t > maxThickness) maxThickness = result.t;
+      totalThickness += result.t;
     }
   }
 
@@ -78,23 +87,6 @@ export function analyzeWallThickness(
     thicknessDistribution,
     sampleCount: samples.length,
   };
-}
-
-function raycastThickness(
-  origin: Vector3,
-  direction: Vector3,
-  triangles: { v0: Vector3; v1: Vector3; v2: Vector3; normal: Vector3 }[]
-): number {
-  let minT = Infinity;
-
-  for (const tri of triangles) {
-    const result = rayTriangleIntersect(origin, direction, tri.v0, tri.v1, tri.v2);
-    if (result.hit && result.t > 0.001 && result.t < minT) {
-      minT = result.t;
-    }
-  }
-
-  return isFinite(minT) ? minT : -1;
 }
 
 function computeThicknessDistribution(

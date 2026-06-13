@@ -1,4 +1,3 @@
-import * as THREE from 'three';
 import type {
   ModelData,
   ModelLayer,
@@ -8,6 +7,7 @@ import type {
   BoundingBox,
   Vector3,
 } from '@/types';
+import { computeFaceNormals } from './geometry';
 
 const DEFAULT_PALETTE = [
   '#6b8e9e',
@@ -154,12 +154,7 @@ function buildGeometryFromFaces(
 
   let computedNormals = newNormals;
   if (!originalNormals || originalNormals.length === 0) {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(newVertices, 3));
-    geo.setIndex(new THREE.BufferAttribute(newIndices, 1));
-    geo.computeVertexNormals();
-    const n = geo.getAttribute('normal');
-    computedNormals = new Float32Array(n.array as Float32Array);
+    computedNormals = computeVertexNormals(newVertices, newIndices, faceCount);
   }
 
   return {
@@ -169,6 +164,72 @@ function buildGeometryFromFaces(
     faceCount,
     vertexCount,
   };
+}
+
+function computeVertexNormals(
+  vertices: Float32Array,
+  indices: Uint32Array | Uint16Array,
+  faceCount: number
+): Float32Array {
+  const vertexCount = vertices.length / 3;
+  const normals = new Float32Array(vertexCount * 3);
+  const faceNormalCount = new Uint32Array(vertexCount);
+
+  for (let fi = 0; fi < faceCount; fi++) {
+    const i0 = indices[fi * 3];
+    const i1 = indices[fi * 3 + 1];
+    const i2 = indices[fi * 3 + 2];
+
+    const ax = vertices[i1 * 3] - vertices[i0 * 3];
+    const ay = vertices[i1 * 3 + 1] - vertices[i0 * 3 + 1];
+    const az = vertices[i1 * 3 + 2] - vertices[i0 * 3 + 2];
+
+    const bx = vertices[i2 * 3] - vertices[i0 * 3];
+    const by = vertices[i2 * 3 + 1] - vertices[i0 * 3 + 1];
+    const bz = vertices[i2 * 3 + 2] - vertices[i0 * 3 + 2];
+
+    const nx = ay * bz - az * by;
+    const ny = az * bx - ax * bz;
+    const nz = ax * by - ay * bx;
+
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    const invLen = len > 0 ? 1 / len : 0;
+    const fnx = nx * invLen;
+    const fny = ny * invLen;
+    const fnz = nz * invLen;
+
+    normals[i0 * 3] += fnx;
+    normals[i0 * 3 + 1] += fny;
+    normals[i0 * 3 + 2] += fnz;
+    faceNormalCount[i0]++;
+
+    normals[i1 * 3] += fnx;
+    normals[i1 * 3 + 1] += fny;
+    normals[i1 * 3 + 2] += fnz;
+    faceNormalCount[i1]++;
+
+    normals[i2 * 3] += fnx;
+    normals[i2 * 3 + 1] += fny;
+    normals[i2 * 3 + 2] += fnz;
+    faceNormalCount[i2]++;
+  }
+
+  for (let vi = 0; vi < vertexCount; vi++) {
+    const count = faceNormalCount[vi];
+    if (count > 0) {
+      const invCount = 1 / count;
+      const nx = normals[vi * 3] * invCount;
+      const ny = normals[vi * 3 + 1] * invCount;
+      const nz = normals[vi * 3 + 2] * invCount;
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      const invLen = len > 0 ? 1 / len : 0;
+      normals[vi * 3] = nx * invLen;
+      normals[vi * 3 + 1] = ny * invLen;
+      normals[vi * 3 + 2] = nz * invLen;
+    }
+  }
+
+  return normals;
 }
 
 export function splitModelByAxis(

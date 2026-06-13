@@ -1,4 +1,4 @@
-import { Suspense, useRef, useEffect, useMemo } from 'react';
+import { Suspense, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Environment, Grid, Html, Center } from '@react-three/drei';
 import { EffectComposer, Bloom, SSAO } from '@react-three/postprocessing';
@@ -21,7 +21,7 @@ import { UndercutRegionsDisplay } from './UndercutRegionsDisplay';
 import { TextAnnotationDialog } from '@/components/dialogs/TextAnnotationDialog';
 import { HoleArrayDialog } from '@/components/dialogs/HoleArrayDialog';
 import { createSampleBoxModel } from '@/utils/modelLoader';
-import { computeSection } from '@/utils/section';
+import { useAnalysisWorker } from '@/hooks/useAnalysisWorker';
 
 function SceneBackground() {
   const isDarkMode = useAppStore((state) => state.isDarkMode);
@@ -334,12 +334,14 @@ function Scene() {
   const cameraFocusTarget = useAppStore((state) => state.cameraFocusTarget);
   const setSelectedUndercutRegionId = useAppStore((state) => state.setSelectedUndercutRegionId);
   const setCameraFocusTarget = useAppStore((state) => state.setCameraFocusTarget);
+  const { runAnalysis } = useAnalysisWorker();
 
   const displayModel = model || createSampleBoxModel();
 
   const controlsRef = useRef<any>(null);
   const { camera } = useThree();
   const focusAnimRef = useRef<{ target: THREE.Vector3; progress: number } | null>(null);
+  const debounceRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (layersEnabled && displayModel && modelLayers.length === 0) {
@@ -352,12 +354,38 @@ function Scene() {
     }
   }, [layersEnabled, displayModel, layerSplitStrategy, modelLayers.length, setModelLayers]);
 
-  useEffect(() => {
-    if (analysisMode === 'section' && displayModel && sectionPlane.visible) {
-      const result = computeSection(displayModel, sectionPlane, sectionThicknessResolution);
+  const computeSectionAsync = useCallback(async () => {
+    if (analysisMode !== 'section' || !displayModel || !sectionPlane.visible) return;
+
+    try {
+      const result = await runAnalysis('section', {
+        model: displayModel,
+        plane: sectionPlane,
+        thicknessResolution: sectionThicknessResolution,
+      });
       setSectionResult(result);
+    } catch (e) {
+      console.error('Section computation failed:', e);
     }
-  }, [sectionPlane.position, sectionPlane.axis, analysisMode, displayModel, sectionPlane.visible, sectionThicknessResolution, setSectionResult]);
+  }, [analysisMode, displayModel, sectionPlane, sectionThicknessResolution, runAnalysis, setSectionResult]);
+
+  useEffect(() => {
+    if (analysisMode !== 'section' || !displayModel || !sectionPlane.visible) return;
+
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+
+    debounceRef.current = window.setTimeout(() => {
+      computeSectionAsync();
+    }, 100);
+
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+    };
+  }, [sectionPlane.position, sectionPlane.axis, analysisMode, displayModel, sectionPlane.visible, sectionThicknessResolution, computeSectionAsync]);
 
   useEffect(() => {
     if (cameraFocusTarget && controlsRef.current) {

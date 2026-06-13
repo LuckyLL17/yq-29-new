@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useCallback } from 'react';
 import {
   Upload,
   Layers,
@@ -28,13 +28,11 @@ import {
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { loadModelFromFile, createSampleBoxModel, createSampleBowlModel } from '@/utils/modelLoader';
-import { analyzeDraftAngles } from '@/utils/draftAngle';
-import { analyzeWallThickness } from '@/utils/wallThickness';
 import { planDrainHoles, exportToDXF, exportToCoordinates, downloadFile } from '@/utils/drainHoles';
-import { estimateMoldingCycle, MATERIAL_OPTIONS } from '@/utils/moldingCycle';
-import { computeSection, getPlaneBounds } from '@/utils/section';
-import { computeModelDiff } from '@/utils/modelDiff';
+import { MATERIAL_OPTIONS } from '@/utils/moldingCycle';
+import { getPlaneBounds } from '@/utils/section';
 import { splitModel } from '@/utils/layerSplitter';
+import { useAnalysisWorker } from '@/hooks/useAnalysisWorker';
 import { AnnotationPanel } from './AnnotationPanel';
 import type { AnalysisMode, VisualizationMode, SectionAxis, CompareMode, LayerSplitAxis, LayerSplitStrategy } from '@/types';
 
@@ -50,6 +48,7 @@ const tools = [
 export function LeftToolbar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileInput2Ref = useRef<HTMLInputElement>(null);
+  const { runAnalysis: runWorkerAnalysis } = useAnalysisWorker();
   const model = useAppStore((state) => state.model);
   const model2 = useAppStore((state) => state.model2);
   const modelFileName = useAppStore((state) => state.modelFileName);
@@ -185,7 +184,7 @@ export function LeftToolbar() {
     }, 300);
   };
 
-  const runAnalysis = (mode: AnalysisMode) => {
+  const runAnalysis = useCallback(async (mode: AnalysisMode) => {
     if (mode !== 'compare' && !model) {
       alert('请先导入模型');
       return;
@@ -199,63 +198,103 @@ export function LeftToolbar() {
     setIsLoading(true);
     setAnalysisMode(mode);
 
-    setTimeout(() => {
-      try {
-        switch (mode) {
-          case 'draft': {
-            const result = analyzeDraftAngles(model, draftDirection, draftAngleThreshold);
-            setDraftAngleResult(result);
-            break;
-          }
-          case 'thickness': {
-            const result = analyzeWallThickness(model, thicknessSampleCount);
-            setWallThicknessResult(result);
-            break;
-          }
-          case 'holes': {
-            const result = planDrainHoles(model, holeDiameter, holeSpacing, holeDepth);
-            setDrainHoleResult(result);
-            break;
-          }
-          case 'cycle': {
-            const result = estimateMoldingCycle(cycleParameters, cycleParameters.targetThickness);
-            setCycleResult(result);
-            break;
-          }
-          case 'section': {
-            const bounds = getPlaneBounds(model, sectionPlane.axis);
-            const centerPos = (bounds.min + bounds.max) / 2;
-            setSectionPlane({
-              visible: true,
-              position: centerPos,
-              axis: sectionPlane.axis,
-            });
-            const result = computeSection(model, {
-              ...sectionPlane,
-              position: centerPos,
-              visible: true,
-            }, sectionThicknessResolution);
-            setSectionResult(result);
-            break;
-          }
-          case 'compare': {
-            if (compareMode === 'diffcolormap' && model && model2) {
-              const result = computeModelDiff(model, model2);
-              setModelDiffResult(result);
-            } else {
-              setModelDiffResult(null);
-            }
-            break;
-          }
+    try {
+      switch (mode) {
+        case 'draft': {
+          const result = await runWorkerAnalysis('draftAngle', {
+            model,
+            draftDirection,
+            threshold: draftAngleThreshold,
+          });
+          setDraftAngleResult(result);
+          break;
         }
-      } catch (error) {
-        console.error('分析失败:', error);
-        alert('分析失败，请重试');
-      } finally {
-        setIsLoading(false);
+        case 'thickness': {
+          const result = await runWorkerAnalysis('wallThickness', {
+            model,
+            sampleCount: thicknessSampleCount,
+          });
+          setWallThicknessResult(result);
+          break;
+        }
+        case 'holes': {
+          const result = await runWorkerAnalysis('drainHoles', {
+            model,
+            holeDiameter,
+            holeSpacing,
+            holeDepth,
+          });
+          setDrainHoleResult(result);
+          break;
+        }
+        case 'cycle': {
+          const result = await runWorkerAnalysis('moldingCycle', {
+            parameters: cycleParameters,
+            targetThickness: cycleParameters.targetThickness,
+          });
+          setCycleResult(result);
+          break;
+        }
+        case 'section': {
+          const bounds = getPlaneBounds(model, sectionPlane.axis);
+          const centerPos = (bounds.min + bounds.max) / 2;
+          const newPlane = {
+            visible: true,
+            position: centerPos,
+            axis: sectionPlane.axis,
+          };
+          setSectionPlane(newPlane);
+          const result = await runWorkerAnalysis('section', {
+            model,
+            plane: newPlane,
+            thicknessResolution: sectionThicknessResolution,
+          });
+          setSectionResult(result);
+          break;
+        }
+        case 'compare': {
+          if (compareMode === 'diffcolormap' && model && model2) {
+            const result = await runWorkerAnalysis('modelDiff', {
+              model1: model,
+              model2: model2,
+            });
+            setModelDiffResult(result);
+          } else {
+            setModelDiffResult(null);
+          }
+          break;
+        }
       }
-    }, 100);
-  };
+    } catch (error) {
+      console.error('分析失败:', error);
+      alert('分析失败，请重试');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [
+    model,
+    model2,
+    draftDirection,
+    draftAngleThreshold,
+    thicknessSampleCount,
+    holeDiameter,
+    holeSpacing,
+    holeDepth,
+    cycleParameters,
+    sectionPlane,
+    sectionThicknessResolution,
+    compareMode,
+    runWorkerAnalysis,
+    setIsLoading,
+    setAnalysisMode,
+    setDraftAngleResult,
+    setWallThicknessResult,
+    setDrainHoleResult,
+    setCycleResult,
+    setSectionPlane,
+    setSectionResult,
+    setModelDiffResult,
+  ]);
 
   return (
     <div className="w-72 h-full bg-surface-panel border-r border-edge-base flex flex-col overflow-hidden">
@@ -793,15 +832,23 @@ export function LeftToolbar() {
 
               <div className="flex gap-2">
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     toggleSectionVisible();
                     if (!sectionPlane.visible && model) {
-                      const result = computeSection(
-                        model,
-                        sectionPlane,
-                        sectionThicknessResolution
-                      );
-                      setSectionResult(result);
+                      setIsLoading(true);
+                      try {
+                        const result = await runWorkerAnalysis('section', {
+                          model,
+                          plane: sectionPlane,
+                          thicknessResolution: sectionThicknessResolution,
+                        });
+                        setSectionResult(result);
+                      } catch (error) {
+                        console.error('截面计算失败:', error);
+                        alert('截面计算失败，请重试');
+                      } finally {
+                        setIsLoading(false);
+                      }
                     }
                   }}
                   className={`flex-1 py-2 text-sm rounded-lg transition-colors ${
@@ -815,18 +862,22 @@ export function LeftToolbar() {
               </div>
 
               <button
-                onClick={() => {
+                onClick={async () => {
                   if (model) {
                     setIsLoading(true);
-                    setTimeout(() => {
-                      const result = computeSection(
+                    try {
+                      const result = await runWorkerAnalysis('section', {
                         model,
-                        sectionPlane,
-                        sectionThicknessResolution
-                      );
+                        plane: sectionPlane,
+                        thicknessResolution: sectionThicknessResolution,
+                      });
                       setSectionResult(result);
+                    } catch (error) {
+                      console.error('截面计算失败:', error);
+                      alert('截面计算失败，请重试');
+                    } finally {
                       setIsLoading(false);
-                    }, 50);
+                    }
                   }
                 }}
                 className="w-full py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-sm rounded-lg transition-colors"
@@ -853,21 +904,22 @@ export function LeftToolbar() {
                     return (
                       <button
                         key={mode.id}
-                        onClick={() => {
+                        onClick={async () => {
                           setCompareMode(mode.id as CompareMode);
                           if (mode.id === 'diffcolormap' && model && model2) {
                             setIsLoading(true);
-                            setTimeout(() => {
-                              try {
-                                const result = computeModelDiff(model, model2);
-                                setModelDiffResult(result);
-                              } catch (error) {
-                                console.error('差异计算失败:', error);
-                                alert('差异计算失败，请重试');
-                              } finally {
-                                setIsLoading(false);
-                              }
-                            }, 100);
+                            try {
+                              const result = await runWorkerAnalysis('modelDiff', {
+                                model1: model,
+                                model2: model2,
+                              });
+                              setModelDiffResult(result);
+                            } catch (error) {
+                              console.error('差异计算失败:', error);
+                              alert('差异计算失败，请重试');
+                            } finally {
+                              setIsLoading(false);
+                            }
                           } else {
                             setModelDiffResult(null);
                           }

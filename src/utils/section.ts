@@ -9,7 +9,7 @@ import type {
 import {
   computeFaceNormals,
   buildBVH,
-  rayTriangleIntersect,
+  raycastBVH,
 } from './geometry';
 
 const EPS = 1e-8;
@@ -319,7 +319,7 @@ function computeSectionThickness(
       const pt = pointAtDistance(contour, dist);
       if (!pt) continue;
 
-      const t = raycastThickness(pt, normal, bvh.triangles);
+      const t = raycastThickness(pt, normal, bvh);
       if (t > 0 && t < 1000) {
         samples.push({ position: dist, thickness: t, normal });
       }
@@ -370,7 +370,7 @@ function pointAtDistance(
 function raycastThickness(
   point: Vector3,
   planeNormal: Vector3,
-  triangles: { v0: Vector3; v1: Vector3; v2: Vector3; normal: Vector3 }[]
+  bvh: ReturnType<typeof buildBVH>
 ): number {
   const dir = { x: -planeNormal.x, y: -planeNormal.y, z: -planeNormal.z };
   const origin = {
@@ -379,14 +379,8 @@ function raycastThickness(
     z: point.z + planeNormal.z * 0.01,
   };
 
-  let minT = Infinity;
-  for (const tri of triangles) {
-    const r = rayTriangleIntersect(origin, dir, tri.v0, tri.v1, tri.v2);
-    if (r.hit && r.t > 0.001 && r.t < minT) {
-      minT = r.t;
-    }
-  }
-  return isFinite(minT) ? minT : -1;
+  const result = raycastBVH(origin, dir, bvh, 1000);
+  return result.hit && result.t > 0.001 ? result.t : -1;
 }
 
 function computeThicknessDistribution(
